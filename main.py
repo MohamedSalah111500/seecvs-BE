@@ -87,14 +87,38 @@ def extract_json(raw: str) -> dict:
         return {"score": 0, "comment": "AI response format error."}
 
 # ================= AI LOGIC =================
+# ================= AI LOGIC UPDATED =================
 def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank") -> dict:
     if mode == "ats":
-        system_content = "You are an expert Resume Strategist."
-        user_prompt = f"Analyze this CV for ATS compatibility. Provide a score (0-100) and actionable advice.\n\nCV:\n{cv_text[:7000]}"
-    else:
-        system_content = "You are an expert HR Recruiter."
-        user_prompt = f"Compare CV with Job Description. Score 0-100 and summarize match.\n\nJD: {job_desc}\n\nCV: {cv_text[:7000]}"
+        system_content = "You are an expert Resume Strategist. You always respond in JSON format."
+        user_prompt = f"""
+        Analyze this CV for ATS compatibility. Provide a score (0-100) and actionable advice.
+        
+        You must return the result as a valid JSON object with the following keys:
+        "score": (integer)
+        "comment": (string with actionable advice)
 
+        CV CONTENT:
+        {cv_text[:7000]}
+        """
+    else:
+        system_content = "You are an expert HR Recruiter. You always respond in JSON format."
+        user_prompt = f"""
+        Compare the following CV with the Job Description. 
+        Calculate a match score (0-100) and summarize the match.
+        
+        You must return the result as a valid JSON object with the following keys:
+        "score": (integer)
+        "comment": (string summary)
+
+        JOB DESCRIPTION:
+        {job_desc}
+
+        CV CONTENT:
+        {cv_text[:7000]}
+        """
+
+    # The API will now accept this because 'json' is mentioned multiple times
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
