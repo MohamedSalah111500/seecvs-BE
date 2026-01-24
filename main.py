@@ -66,16 +66,31 @@ def extract_json(raw: str) -> dict:
 def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: str = "en") -> dict:
     target_lang = "Arabic" if lang == "ar" else "English"
     
-    system_content = f"You are an expert HR. Respond in JSON. Language: {target_lang}."
-    
     if mode == "ats":
-        user_prompt = f"""Score CV (0-100) vs JD. 
-        'comment' MUST be a JSON array of 3 strings in {target_lang}. No bullets.
-        JD: {job_desc} | CV: {cv_text[:6000]}"""
+        # Strategy: Actionable tips for improvement
+        system_content = f"You are a CV Optimization Expert. Your goal is to provide actionable tips to help the user improve their CV score. Respond in JSON. Language: {target_lang}."
+        user_prompt = f"""
+        Analyze the CV against the JD for ATS optimization. Provide a compatibility score (0-100).
+        Then, provide exactly 3 ACTIONABLE tips in the 'comment' field.
+        
+        Guidelines for 'comment':
+        - Point 1: Missing keywords or technical skills that should be added.
+        - Point 2: Specific advice on rewording experiences to match the JD.
+        - Point 3: Formatting or structural advice to pass ATS filters.
+
+        CRITICAL: 'comment' MUST be a JSON array of 3 strings in {target_lang}. No bullet symbols.
+        JD: {job_desc} | CV: {cv_text[:6000]}
+        """
     else:
-        user_prompt = f"""Score CV (0-100) vs JD. 
-        'comment' MUST be a JSON array of 3-4 strings in {target_lang}. No bullets.
-        JD: {job_desc} | CV: {cv_text[:7000]}"""
+        # Strategy: General HR analysis
+        system_content = f"You are an expert HR Recruiter. Your goal is to analyze the candidate's fit for the role. Respond in JSON. Language: {target_lang}."
+        user_prompt = f"""
+        Compare the CV with the Job Description. Provide a match score (0-100).
+        In the 'comment' field, provide 3-4 strings summarizing why they do or do not match.
+        
+        CRITICAL: 'comment' MUST be a JSON array of strings in {target_lang}. No bullet symbols.
+        JD: {job_desc} | CV: {cv_text[:7000]}
+        """
         
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -89,15 +104,16 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: st
     return extract_json(response.choices[0].message.content)
 
 # ================= API ENDPOINTS =================
-@app.post("/analyze-cvs") # Matches your Angular Call
+@app.post("/analyze-cvs")
 @limiter.limit("20/minute")
 async def analyze_cvs(
     request: Request,
     files: List[UploadFile] = File(...),
     job_description: str = Form(...),
     notes: str = Form(""),
-    lang: str = Form("en") # Captures the 'ar' or 'en'
+    lang: str = Form("en")
 ):
+    # Ensure mode is correctly identified
     mode = "ats" if notes == "ats-mode" else "rank"
     results = []
 
@@ -109,6 +125,10 @@ async def analyze_cvs(
             continue
 
         ext = file.filename.split(".")[-1].lower()
+        if ext not in ["pdf", "docx"]:
+            results.append({"filename": file.filename, "score": 0, "comment": ["Unsupported format"]})
+            continue
+
         file_id = str(uuid.uuid4())
         path = os.path.join(UPLOAD_DIR, f"{file_id}.{ext}")
 
@@ -116,15 +136,15 @@ async def analyze_cvs(
             with open(path, "wb") as f:
                 f.write(file_content)
 
-            # 2. Text Extraction (Fixed NameError)
+            # 2. Text Extraction
             raw_text = read_pdf(path) if ext == "pdf" else read_docx(path)
             text = clean_text(raw_text)
 
             if len(text) < 50:
-                results.append({"filename": file.filename, "score": 0, "comment": ["Insufficient text found"]})
+                results.append({"filename": file.filename, "score": 0, "comment": ["Insufficient text found in document"]})
             else:
-                # 3. AI Analysis
-                ai_result = analyze_cv_with_ai(text, job_description, mode, lang)
+                # 3. AI Analysis with Language and Mode parameters
+                ai_result = analyze_cv_with_ai(text, job_description, mode=mode, lang=lang)
                 results.append({
                     "filename": file.filename,
                     "score": ai_result.get("score", 0),
