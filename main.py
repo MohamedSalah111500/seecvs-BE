@@ -96,15 +96,16 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: st
     if mode == "ats":
         system_content = f"You are an expert Resume Strategist. You always respond in JSON format. All text in 'comment' MUST be in {target_lang}."
         user_prompt = f"""
-        Compare CV with Job Description. Score 0-100.
+        Compare the CV with the Job Description. Provide a compatibility score from 0-100.
         
-        CRITICAL: The "comment" must be a JSON array containing exactly 3 strings.
-        Each string should be a concise feedback point.
+        CRITICAL: The "comment" field MUST be a JSON array containing exactly 3 separate strings.
+        Do NOT include bullet points (like • or -) inside the strings.
+        The analysis MUST be written in {target_lang}.
         
-        Example JSON structure:
+        Example JSON:
         {{
             "score": 85,
-            "comment": ["First point", "Second point", "Third point"]
+            "comment": ["Point 1 in {target_lang}", "Point 2 in {target_lang}", "Point 3 in {target_lang}"]
         }}
 
         JD: {job_desc}
@@ -113,8 +114,10 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: st
     else:
         system_content = f"You are an expert HR Recruiter. You always respond in JSON format. All text in 'comment' MUST be in {target_lang}."
         user_prompt = f"""
-        Compare CV with Job Description. Score 0-100.
-        "comment" must be a JSON array of 3-4 strings summarizing the match.
+        Compare the CV with the Job Description. Provide a match score from 0-100.
+        "comment" MUST be a JSON array of 3-4 strings summarizing the match.
+        Do NOT use bullet point symbols inside the strings.
+        The entire analysis MUST be in {target_lang}.
         
         JD: {job_desc}
         CV CONTENT: {cv_text[:7000]}
@@ -126,12 +129,11 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: st
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.2,
+        temperature=0.1, # Lower temperature for stricter formatting
         response_format={ 'type': 'json_object' }
     )
     
     return extract_json(response.choices[0].message.content)
-
 # ================= API ENDPOINTS =================
 @app.post("/analyze-cvs")
 @limiter.limit("10/minute") # Rate limit: 10 requests per minute per IP
