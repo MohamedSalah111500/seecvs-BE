@@ -142,7 +142,7 @@ async def analyze_cvs(
     files: List[UploadFile] = File(...),
     job_description: str = Form(...),
     notes: str = Form(""),
-    lang: str = Form("en")  # <--- CRITICAL: Capture the language here
+    lang: str = Form("en") # Capture the language field
 ):
     if not files:
         raise HTTPException(400, "No files uploaded")
@@ -151,23 +151,48 @@ async def analyze_cvs(
     results = []
 
     for file in files:
-        # ... (Your existing file validation and reading logic) ...
+        # 1. Validate File Size
         file_content = await file.read()
-        # ... (Assuming 'text' is extracted here) ...
+        if len(file_content) > MAX_FILE_SIZE:
+            results.append({"filename": file.filename, "score": 0, "comment": ["File too large (Max 5MB)"]})
+            continue
 
-        if len(text) < 100:
-            results.append({"filename": file.filename, "score": 0, "comment": ["Insufficient text."]})
-        else:
-            # CRITICAL: Pass 'lang' to the AI function
-            ai_result = analyze_cv_with_ai(text, job_description, mode=mode, lang=lang)
-            results.append({
-                "filename": file.filename,
-                "score": ai_result.get("score", 0),
-                "comment": ai_result.get("comment", [])
-            })
+        # 2. Validate File Extension
+        ext = file.filename.split(".")[-1].lower()
+        if ext not in ["pdf", "docx"]:
+            results.append({"filename": file.filename, "score": 0, "comment": ["Unsupported format"]})
+            continue
+
+        file_id = str(uuid.uuid4())
+        path = os.path.join(UPLOAD_DIR, f"{file_id}.{ext}")
+
+        # Define text as empty string initially to avoid NameError
+        text = "" 
+
+        try:
+            with open(path, "wb") as f:
+                f.write(file_content)
+
+            # Extract text BEFORE checking length
+            text = read_pdf(path) if ext == "pdf" else read_docx(path)
+            text = clean_text(text)
+
+            if len(text) < 100:
+                results.append({"filename": file.filename, "score": 0, "comment": ["Could not extract sufficient text."]})
+            else:
+                # Pass 'lang' to your AI logic function
+                ai_result = analyze_cv_with_ai(text, job_description, mode=mode, lang=lang)
+                results.append({
+                    "filename": file.filename,
+                    "score": ai_result.get("score", 0),
+                    "comment": ai_result.get("comment", [])
+                })
+        except Exception as e:
+            print(f"Error processing {file.filename}: {e}")
+            results.append({"filename": file.filename, "score": 0, "comment": ["Internal processing error."]})
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"mode": mode, "results": results}
-@app.get("/health")
-def health():
-    return {"status": "online"}
