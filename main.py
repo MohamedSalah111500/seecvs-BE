@@ -88,35 +88,38 @@ def extract_json(raw: str) -> dict:
 
 # ================= AI LOGIC =================
 # ================= AI LOGIC UPDATED =================
-def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank") -> dict:
+
+def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: str = "en") -> dict:
+    # Set the target language instruction
+    target_lang = "Arabic" if lang == "ar" else "English"
+    
     if mode == "ats":
-        system_content = "You are an expert Resume Strategist. You always respond in JSON format. Use bullet points for comments."
+        system_content = f"You are an expert Resume Strategist. You always respond in JSON format. All text in 'comment' MUST be in {target_lang}."
         user_prompt = f"""
         Compare CV with Job Description. Score 0-100.
         
-        CRITICAL: The "comment" must be exactly 3 bullet points.
-        Each point MUST start with '•' and end with a newline character.
-        DO NOT use commas between the points.
+        CRITICAL: The "comment" must be a JSON array containing exactly 3 strings.
+        Each string should be a concise feedback point.
         
-        Format:
-        • First point here
-        • Second point here
-        • Third point here
+        Example JSON structure:
+        {{
+            "score": 85,
+            "comment": ["First point", "Second point", "Third point"]
+        }}
 
         JD: {job_desc}
         CV: {cv_text[:6000]}
         """
     else:
-        system_content = "You are an expert HR Recruiter. You always respond in JSON format."
+        system_content = f"You are an expert HR Recruiter. You always respond in JSON format. All text in 'comment' MUST be in {target_lang}."
         user_prompt = f"""
         Compare CV with Job Description. Score 0-100.
-        "comment" must be 3-4 bullet points starting with '•' summarizing match.
+        "comment" must be a JSON array of 3-4 strings summarizing the match.
         
         JD: {job_desc}
         CV CONTENT: {cv_text[:7000]}
         """
         
-    # The API will now accept this because 'json' is mentioned multiple times
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -126,6 +129,7 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank") -> dict:
         temperature=0.2,
         response_format={ 'type': 'json_object' }
     )
+    
     return extract_json(response.choices[0].message.content)
 
 # ================= API ENDPOINTS =================
