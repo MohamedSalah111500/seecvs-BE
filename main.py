@@ -90,34 +90,26 @@ def extract_json(raw: str) -> dict:
 # ================= AI LOGIC UPDATED =================
 def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank") -> dict:
     if mode == "ats":
-        system_content = "You are an expert Resume Strategist. You always respond in JSON format."
+        system_content = "You are an expert Resume Strategist. You always respond in JSON format. Use bullet points for comments."
         user_prompt = f"""
         Analyze this CV for ATS compatibility. Provide a score (0-100) and actionable advice.
         
-        You must return the result as a valid JSON object with the following keys:
-        "score": (integer)
-        "comment": (string with actionable advice)
+        CRITICAL: The "comment" must be a list of bullet points starting with '•'.
+        Example: "• Fix header formatting. • Add keywords like 'Python'."
 
-        CV CONTENT:
-        {cv_text[:7000]}
+        JSON Keys: "score" (int), "comment" (string).
+        CV CONTENT: {cv_text[:7000]}
         """
     else:
         system_content = "You are an expert HR Recruiter. You always respond in JSON format."
         user_prompt = f"""
-        Compare the following CV with the Job Description. 
-        Calculate a match score (0-100) and summarize the match.
+        Compare CV with Job Description. Score 0-100.
+        "comment" must be 3-4 bullet points starting with '•' summarizing match.
         
-        You must return the result as a valid JSON object with the following keys:
-        "score": (integer)
-        "comment": (string summary)
-
-        JOB DESCRIPTION:
-        {job_desc}
-
-        CV CONTENT:
-        {cv_text[:7000]}
+        JD: {job_desc}
+        CV CONTENT: {cv_text[:7000]}
         """
-
+        
     # The API will now accept this because 'json' is mentioned multiple times
     response = client.chat.completions.create(
         model="deepseek-chat",
