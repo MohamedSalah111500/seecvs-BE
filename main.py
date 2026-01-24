@@ -92,13 +92,19 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank") -> dict:
     if mode == "ats":
         system_content = "You are an expert Resume Strategist. You always respond in JSON format. Use bullet points for comments."
         user_prompt = f"""
-        Analyze this CV for ATS compatibility. Provide a score (0-100) and actionable advice.
+        Compare CV with Job Description. Score 0-100.
         
-        CRITICAL: The "comment" must be a list of bullet points starting with '•'.
-        Example: "• Fix header formatting. • Add keywords like 'Python'."
+        CRITICAL: The "comment" must be exactly 3 bullet points.
+        Each point MUST start with '•' and end with a newline character.
+        DO NOT use commas between the points.
+        
+        Format:
+        • First point here
+        • Second point here
+        • Third point here
 
-        JSON Keys: "score" (int), "comment" (string).
-        CV CONTENT: {cv_text[:7000]}
+        JD: {job_desc}
+        CV: {cv_text[:6000]}
         """
     else:
         system_content = "You are an expert HR Recruiter. You always respond in JSON format."
