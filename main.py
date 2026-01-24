@@ -138,10 +138,11 @@ def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: st
 @app.post("/analyze-cvs")
 @limiter.limit("10/minute") # Rate limit: 10 requests per minute per IP
 async def analyze_cvs(
-    request: Request, # Required for limiter
+    request: Request,
     files: List[UploadFile] = File(...),
     job_description: str = Form(...),
-    notes: str = Form("")
+    notes: str = Form(""),
+    lang: str = Form("en")  # <--- CRITICAL: Capture the language here
 ):
     if not files:
         raise HTTPException(400, "No files uploaded")
@@ -150,44 +151,23 @@ async def analyze_cvs(
     results = []
 
     for file in files:
-        # 1. Validate File Size
+        # ... (Your existing file validation and reading logic) ...
         file_content = await file.read()
-        if len(file_content) > MAX_FILE_SIZE:
-            results.append({"filename": file.filename, "score": 0, "comment": "File too large (Max 5MB)"})
-            continue
+        # ... (Assuming 'text' is extracted here) ...
 
-        # 2. Validate File Extension
-        ext = file.filename.split(".")[-1].lower()
-        if ext not in ["pdf", "docx"]:
-            results.append({"filename": file.filename, "score": 0, "comment": "Unsupported format"})
-            continue
-
-        file_id = str(uuid.uuid4())
-        path = os.path.join(UPLOAD_DIR, f"{file_id}.{ext}")
-
-        try:
-            with open(path, "wb") as f:
-                f.write(file_content)
-
-            text = read_pdf(path) if ext == "pdf" else read_docx(path)
-            text = clean_text(text)
-
-            if len(text) < 100:
-                results.append({"filename": file.filename, "score": 0, "comment": "Could not extract sufficient text."})
-            else:
-                ai_result = analyze_cv_with_ai(text, job_description, mode=mode)
-                results.append({
-                    "filename": file.filename,
-                    "score": ai_result.get("score", 0),
-                    "comment": ai_result.get("comment", "")
-                })
-        finally:
-            if os.path.exists(path):
-                os.remove(path)
+        if len(text) < 100:
+            results.append({"filename": file.filename, "score": 0, "comment": ["Insufficient text."]})
+        else:
+            # CRITICAL: Pass 'lang' to the AI function
+            ai_result = analyze_cv_with_ai(text, job_description, mode=mode, lang=lang)
+            results.append({
+                "filename": file.filename,
+                "score": ai_result.get("score", 0),
+                "comment": ai_result.get("comment", [])
+            })
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"mode": mode, "results": results}
-
 @app.get("/health")
 def health():
     return {"status": "online"}
