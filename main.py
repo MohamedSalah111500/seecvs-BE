@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -9,17 +9,18 @@ import PyPDF2
 import docx2txt
 from openai import OpenAI
 
+# Google Drive Imports
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+
 # ================= CONFIG =================
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="SeeCVs PRO")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-origins = [
-    "https://seecvs.com",
-    "https://www.seecvs.com",
-    "http://localhost:4200"
-]
+origins = ["https://seecvs.com", "https://www.seecvs.com", "http://localhost:4200"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,30 +31,58 @@ app.add_middleware(
 )
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
-UPLOAD_BASE_DIR = "uploads"
-os.makedirs(UPLOAD_BASE_DIR, exist_ok=True)
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
+DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
+GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+
 client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
 
-# ================= FILE STORAGE =================
-def safe_folder_name(name: str) -> str:
-    name = name.lower().strip()
-    name = re.sub(r"[^a-z0-9\s_-]", "", name)
-    return re.sub(r"\s+", "_", name)
-
-def save_cv_locally(file_bytes: bytes, filename: str, job_title: str) -> str:
-    job_folder = safe_folder_name(job_title)
-    job_path = os.path.join(UPLOAD_BASE_DIR, job_folder)
-    os.makedirs(job_path, exist_ok=True)
-
+# ================= LOCAL SAVE =================
+def save_file_locally(file_bytes: bytes, filename: str) -> str:
     unique_name = f"{uuid.uuid4()}_{filename}"
-    file_path = os.path.join(job_path, unique_name)
-
-    with open(file_path, "wb") as f:
+    path = os.path.join(UPLOAD_DIR, unique_name)
+    with open(path, "wb") as f:
         f.write(file_bytes)
+    return path
 
-    return file_path
+# ================= GOOGLE DRIVE LOGIC =================
+def get_drive_service():
+    if not GOOGLE_CREDS_JSON:
+        return None
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS_JSON)
+        scopes = ['https://www.googleapis.com/auth/drive.file']
+        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return build('drive', 'v3', credentials=creds)
+    except Exception:
+        return None
+
+def upload_to_drive(file_content: bytes, filename: str):
+    service = get_drive_service()
+    if not service or not DRIVE_FOLDER_ID:
+        return None
+    try:
+        file_metadata = {
+            'name': f"{uuid.uuid4()}_{filename}",
+            'parents': [DRIVE_FOLDER_ID]
+        }
+        media = MediaIoBaseUpload(
+            io.BytesIO(file_content),
+            mimetype='application/pdf',
+            resumable=True
+        )
+        uploaded_file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        return uploaded_file.get('id')
+    except Exception:
+        return None
 
 # ================= HELPERS =================
 def read_pdf(file_bytes: bytes) -> str:
@@ -95,14 +124,9 @@ def normalize_score(value) -> int:
         return 0
 
 # ================= AI ANALYSIS =================
-def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str, lang: str) -> dict:
+def analyze_cv_with_ai(cv_text: str, job_desc: str, mode: str = "rank", lang: str = "en") -> dict:
     target_lang = "Arabic" if lang == "ar" else "English"
-
-    system_prompt = (
-        f"You are a Senior Recruiter and ATS Expert. "
-        f"Respond in JSON only. Language: {target_lang}."
-    )
-
+    system_prompt = f"You are a Senior Recruiter and ATS Expert. Respond in JSON only. Language: {target_lang}."
     user_prompt = f"""
 Analyze the CV against the Job Description.
 Mode: {mode.upper()}
@@ -111,13 +135,9 @@ RULES:
 - Score: 0-100
 - Comment: List of strings
 
-Job Description:
-{job_desc[:4000]}
-
-CV Content:
-{cv_text[:4000]}
+Job Description: {job_desc[:4000]}
+CV Content: {cv_text[:4000]}
 """
-
     response = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -127,7 +147,6 @@ CV Content:
         temperature=0.1,
         response_format={"type": "json_object"}
     )
-
     parsed = extract_json(response.choices[0].message.content)
     return {
         "score": normalize_score(parsed.get("score")),
@@ -140,7 +159,6 @@ CV Content:
 async def analyze_cvs(
     request: Request,
     files: List[UploadFile] = File(...),
-    job_title: str = Form(...),
     job_description: str = Form(...),
     notes: str = Form(""),
     lang: str = Form("en")
@@ -152,57 +170,39 @@ async def analyze_cvs(
         content = await file.read()
 
         if len(content) > MAX_FILE_SIZE:
-            results.append({
-                "filename": file.filename,
-                "score": 0,
-                "comment": ["File too large (Max 5MB)"]
-            })
+            results.append({"filename": file.filename, "score": 0, "comment": ["File too large"]})
             continue
 
         ext = file.filename.split(".")[-1].lower()
         if ext not in ["pdf", "docx"]:
-            results.append({
-                "filename": file.filename,
-                "score": 0,
-                "comment": ["Unsupported format"]
-            })
+            results.append({"filename": file.filename, "score": 0, "comment": ["Unsupported format"]})
             continue
 
-        # 1️⃣ Save file locally under job folder
-        stored_path = save_cv_locally(content, file.filename, job_title)
+        # ✅ SAVE LOCALLY (NEW)
+        local_path = save_file_locally(content, file.filename)
 
-        # 2️⃣ Extract text
+        # OPTIONAL: Google Drive (can be removed later)
+        drive_id = upload_to_drive(content, file.filename)
+
         raw_text = read_pdf(content) if ext == "pdf" else read_docx(content)
         text = clean_text(raw_text)
 
         if len(text) < 100:
-            results.append({
-                "filename": file.filename,
-                "score": 0,
-                "comment": ["Could not read CV content"]
-            })
+            results.append({"filename": file.filename, "score": 0, "comment": ["Unreadable CV"]})
             continue
 
-        # 3️⃣ AI analysis
         ai_result = analyze_cv_with_ai(text, job_description, mode, lang)
 
         results.append({
             "filename": file.filename,
             "score": ai_result["score"],
             "comment": ai_result["comment"],
-            "stored_at": stored_path
+            "local_path": local_path,
+            "drive_id": drive_id
         })
 
-    return {
-        "job": job_title,
-        "mode": mode,
-        "results": results
-    }
+    return {"mode": mode, "results": results}
 
 @app.get("/health")
 def health():
-    return {
-        "status": "online",
-        "storage": "local",
-        "uploads_dir": UPLOAD_BASE_DIR
-    }
+    return {"status": "online"}
