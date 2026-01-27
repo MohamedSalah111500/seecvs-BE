@@ -6,3 +6,5 @@ docx2txt
 openai
 slowapi
 starlette
+google-api-python-client>=2.150.0
+google-auth>=2.30.0
