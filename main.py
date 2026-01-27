@@ -64,27 +64,27 @@ def upload_to_drive(file_content: bytes, filename: str):
             'parents': [DRIVE_FOLDER_ID]
         }
         
+        # Use MediaIoBaseUpload for in-memory bytes
         media = MediaIoBaseUpload(
             io.BytesIO(file_content), 
-            mimetype='application/pdf', # Specify PDF for better compatibility
+            mimetype='application/pdf',
             resumable=True
         )
 
-        # Added supportsAllDrives for Shared Drive compatibility
-        # Added fields='id, webViewLink' for better tracking
+        # CORRECTED: removed allowDirectConvert
+        # supportsAllDrives=True is essential for Shared Drives
         uploaded_file = service.files().create(
             body=file_metadata,
             media_body=media,
             fields='id',
-            supportsAllDrives=True, # Required if using Shared Drives
-            allowDirectConvert=True
+            supportsAllDrives=True 
         ).execute()
         
         return uploaded_file.get('id')
     except Exception as e:
         print(f"Google Drive Upload Error: {e}")
         return None
-    
+        
 # ================= HELPERS =================
 def read_pdf(file_bytes: bytes) -> str:
     try:
