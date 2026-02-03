@@ -158,15 +158,17 @@ def analyze_cv_with_ai(
         - Over-qualified or under-qualified: -10
         - Poorly structured or hard to read: -5
 
-        You MUST return two lists:
+        You MUST return:
+        - "comment": a brief 2-3 sentence summary of the candidate's profile (who they are, key skills, experience level)
         - "improvements": actionable things the user SHOULD DO to improve their CV (add, fix, enhance)
         - "warnings": things the user should REMOVE or STOP doing (bad practices, irrelevant content, formatting issues)
 
-        ALL text in improvements and warnings MUST be in {target_lang}.
+        ALL text in comment, improvements and warnings MUST be in {target_lang}.
 
         JSON FORMAT:
         {{
           "score": number,
+          "comment": ["short summary sentence 1", "short summary sentence 2"],
           "improvements": ["actionable suggestion 1", "actionable suggestion 2", "..."],
           "warnings": ["thing to remove or avoid 1", "thing to remove or avoid 2", "..."]
         }}
