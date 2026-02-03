@@ -84,26 +84,44 @@ def analyze_cv_with_ai(
 
     if mode == "ats":
         system_prompt = (
-            "You are an ATS scoring engine.\n"
-            "Score CV strictly using:\n"
-            "- Keyword match\n"
-            "- Role relevance\n"
-            "- ATS formatting\n"
-            "Return ONLY valid JSON."
+            f"You are a strict ATS (Applicant Tracking System) scoring engine. "
+            f"You must respond ONLY in {target_lang}. Return ONLY valid JSON.\n"
+            "You evaluate CVs harshly and realistically. Most CVs have significant issues.\n"
+            "A score of 90+ means near-perfect ATS optimization — this is extremely rare.\n"
+            "A typical CV scores between 40-65. Only truly outstanding CVs score above 80."
         )
 
         user_prompt = f"""
-        Analyze CV against Job Description for ATS compatibility.
+        Analyze this CV against the Job Description for ATS compatibility.
+        Be STRICT and REALISTIC. Do NOT inflate the score.
 
-        RULES:
-        - Score MUST be a number between 0 and 100.
-        - Comments can be ANY number of strings.
-        - No bullets or numbering.
+        SCORING RUBRIC (deduct points for each issue):
+        - Keyword match with job description (0-25 pts): Exact skill/tool matches, industry terms, certifications mentioned in JD
+        - Role relevance & experience alignment (0-25 pts): Years of experience match, seniority level match, industry match
+        - ATS formatting compliance (0-20 pts): No tables/columns/graphics, standard section headings, clean text parsing, no headers/footers with critical info
+        - Quantified achievements (0-15 pts): Metrics, numbers, percentages showing impact. Vague statements like "responsible for" score 0 here
+        - Structure & completeness (0-15 pts): Contact info, summary, experience with dates, education, skills section
+
+        DEDUCTIONS:
+        - Missing critical keywords from JD: -10 to -20
+        - No quantified achievements at all: -15
+        - Generic objective/summary not tailored to role: -10
+        - Gaps or unclear employment dates: -5
+        - Missing skills section: -10
+        - Too short (under 300 words) or too long (over 1000 words for 1 page): -5
+        - Irrelevant experience listed: -5
+
+        You MUST return two lists:
+        - "improvements": actionable things the user SHOULD DO to improve their CV (add, fix, enhance)
+        - "warnings": things the user should REMOVE or STOP doing (bad practices, irrelevant content, formatting issues)
+
+        ALL text in improvements and warnings MUST be in {target_lang}.
 
         JSON FORMAT:
         {{
           "score": number,
-          "comment": ["string", "string", "..."]
+          "improvements": ["actionable suggestion 1", "actionable suggestion 2", "..."],
+          "warnings": ["thing to remove or avoid 1", "thing to remove or avoid 2", "..."]
         }}
 
         Job Description:
@@ -115,20 +133,42 @@ def analyze_cv_with_ai(
 
     else:
         system_prompt = (
-            f"You are a senior HR recruiter. Respond in JSON only. Language: {target_lang}."
+            f"You are a strict senior HR recruiter. You must respond ONLY in {target_lang}. "
+            f"Return ONLY valid JSON.\n"
+            "You evaluate candidates harshly and realistically. Most candidates are average.\n"
+            "A score of 90+ means an exceptional candidate — this is extremely rare.\n"
+            "A typical candidate scores between 40-65. Only truly outstanding ones score above 80."
         )
 
         user_prompt = f"""
-        Evaluate candidate suitability for the role.
+        Evaluate this candidate's suitability for the role.
+        Be STRICT and REALISTIC. Do NOT inflate the score.
 
-        RULES:
-        - Score between 0 and 100.
-        - Comments can be ANY number of strings.
+        SCORING RUBRIC:
+        - Direct skill match with requirements (0-30 pts): Hard skills, tools, technologies explicitly required
+        - Experience relevance & depth (0-25 pts): Years, seniority, industry alignment
+        - Achievements & impact (0-20 pts): Quantified results, promotions, notable projects
+        - Education & certifications (0-15 pts): Relevant degrees, professional certifications
+        - Overall presentation & clarity (0-10 pts): Well-structured, concise, professional
+
+        DEDUCTIONS:
+        - Missing critical required skills: -10 to -20
+        - Experience in unrelated field: -15
+        - No measurable achievements: -10
+        - Over-qualified or under-qualified: -10
+        - Poorly structured or hard to read: -5
+
+        You MUST return two lists:
+        - "improvements": actionable things the user SHOULD DO to improve their CV (add, fix, enhance)
+        - "warnings": things the user should REMOVE or STOP doing (bad practices, irrelevant content, formatting issues)
+
+        ALL text in improvements and warnings MUST be in {target_lang}.
 
         JSON FORMAT:
         {{
           "score": number,
-          "comment": ["string", "string", "..."]
+          "improvements": ["actionable suggestion 1", "actionable suggestion 2", "..."],
+          "warnings": ["thing to remove or avoid 1", "thing to remove or avoid 2", "..."]
         }}
 
         Job Description:
@@ -150,9 +190,16 @@ def analyze_cv_with_ai(
 
     parsed = extract_json(response.choices[0].message.content)
 
+    # Build backward-compatible comment from improvements + warnings
+    improvements = parsed.get("improvements", [])
+    warnings = parsed.get("warnings", [])
+    comment = parsed.get("comment", [])
+
     return {
         "score": normalize_score(parsed.get("score")),
-        "comment": parsed.get("comment", [])
+        "comment": comment,
+        "improvements": improvements,
+        "warnings": warnings,
     }
 
 # ================= API =================
@@ -215,7 +262,9 @@ async def analyze_cvs(
                 results.append({
                     "filename": file.filename,
                     "score": ai_result["score"],
-                    "comment": ai_result["comment"]
+                    "comment": ai_result["comment"],
+                    "improvements": ai_result.get("improvements", []),
+                    "warnings": ai_result.get("warnings", []),
                 })
 
         finally:
