@@ -8,6 +8,12 @@ import os, json, uuid, re
 import PyPDF2
 import docx2txt
 from openai import OpenAI
+import io
+import datetime
+from pymongo import MongoClient
+import gridfs
+from bson.objectid import ObjectId
+from fastapi.responses import StreamingResponse
 
 # ================= CONFIG =================
 limiter = Limiter(key_func=get_remote_address)
@@ -38,6 +44,13 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
+# MongoDB / GridFS (use cloud URI)
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB = os.environ.get("MONGODB_DB", "seecvs")
+mongo_client = MongoClient(MONGODB_URI)
+db = mongo_client[MONGODB_DB]
+fs = gridfs.GridFS(db)
+
 # ================= HELPERS =================
 def read_pdf(path: str) -> str:
     try:
@@ -52,6 +65,28 @@ def read_docx(path: str) -> str:
         return docx2txt.process(path)
     except Exception:
         return ""
+
+
+TAG_KEYWORDS = [
+    "sales", "designer", "design", "front end", "frontend", "back end", "backend",
+    "full stack", "marketing", "product", "manager", "data scientist", "data engineer",
+    "devops", "qa", "tester", "hr", "recruiter", "accounting", "finance", "ux", "ui",
+    "graphic", "business development", "consultant", "research", "teacher", "developer",
+    "software", "engineer",
+]
+
+
+def extract_tags_from_text(text: str):
+    if not text:
+        return []
+    text_low = text.lower()
+    found = set()
+    for kw in TAG_KEYWORDS:
+        if kw in text_low:
+            # normalize some keywords
+            normalized = kw.replace(" ", "-") if " " in kw else kw
+            found.add(normalized)
+    return sorted(found)
 
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
@@ -261,12 +296,27 @@ async def analyze_cvs(
                     lang=lang
                 )
 
+                # Save CV to MongoDB (GridFS + metadata)
+                tags = extract_tags_from_text(text)
+                gridfs_id = fs.put(content, filename=file.filename, contentType=file.content_type)
+                db.cvs.insert_one({
+                    "fileName": file.filename,
+                    "fileUrl": f"/api/cv/download/{str(gridfs_id)}",
+                    "gridfs_id": str(gridfs_id),
+                    "uploadDate": datetime.datetime.utcnow(),
+                    "tags": tags,
+                    "score": ai_result["score"],
+                    "mode": mode,
+                    "jobDescription": job_description[:500],
+                })
+
                 results.append({
                     "filename": file.filename,
                     "score": ai_result["score"],
                     "comment": ai_result["comment"],
                     "improvements": ai_result.get("improvements", []),
                     "warnings": ai_result.get("warnings", []),
+                    "fileUrl": f"/api/cv/download/{str(gridfs_id)}",
                 })
 
         finally:
@@ -278,3 +328,80 @@ async def analyze_cvs(
 @app.get("/health")
 def health():
     return {"status": "online"}
+
+
+@app.post("/api/cv/upload")
+@limiter.limit("10/minute")
+async def upload_cv(
+    request: Request,
+    file: UploadFile = File(...),
+    userId: str = Form(None),
+    sessionId: str = Form(None),
+):
+    # basic validation
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File size exceeds limit")
+
+    ext = file.filename.split('.')[-1].lower()
+    allowed = ["pdf", "docx", "txt"]
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+
+    # save temporarily
+    file_id = str(uuid.uuid4())
+    path = os.path.join(UPLOAD_DIR, f"{file_id}.{ext}")
+    try:
+        with open(path, "wb") as f:
+            f.write(content)
+
+        # extract text
+        raw_text = read_pdf(path) if ext == "pdf" else read_docx(path)
+        text = clean_text(raw_text)
+
+        if len(text) < 50:
+            # still store file but mark limited extraction
+            tags = []
+        else:
+            tags = extract_tags_from_text(text)
+
+        # store file in GridFS
+        with open(path, "rb") as fh:
+            gridfs_id = fs.put(fh, filename=file.filename, contentType=file.content_type)
+
+        metadata = {
+            "userId": userId,
+            "sessionId": sessionId,
+            "fileName": file.filename,
+            "fileUrl": f"/api/cv/download/{str(gridfs_id)}",
+            "uploadDate": datetime.datetime.utcnow(),
+            "tags": tags,
+            "gridfs_id": str(gridfs_id),
+        }
+
+        db.cvs.insert_one(metadata)
+
+        return {"success": True, "id": str(gridfs_id), "fileUrl": metadata["fileUrl"], "tags": tags}
+
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+@app.get("/api/cv/download/{file_id}")
+async def download_cv(file_id: str):
+    # validate ObjectId
+    try:
+        oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+
+    if not fs.exists({"_id": oid}):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    grid_out = fs.get(oid)
+    data = grid_out.read()
+    filename = grid_out.filename or "file"
+
+    return StreamingResponse(io.BytesIO(data), media_type=(grid_out.contentType or "application/octet-stream"), headers={"Content-Disposition": f'attachment; filename="{filename}"'})
