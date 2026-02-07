@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -410,19 +411,19 @@ async def download_cv(file_id: str):
     return StreamingResponse(io.BytesIO(data), media_type=(grid_out.contentType or "application/octet-stream"), headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
-def verify_admin(authorization: str = Header(None)):
+security = HTTPBearer()
+
+
+def verify_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if not ADMIN_API_KEY:
         raise HTTPException(status_code=500, detail="Admin key not configured")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    token = authorization.removeprefix("Bearer ").strip()
-    if token != ADMIN_API_KEY:
+    if credentials.credentials != ADMIN_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 @app.get("/api/cv/list")
-async def list_cvs(authorization: str = Header(None)):
-    verify_admin(authorization)
+async def list_cvs(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    verify_admin(credentials)
 
     cvs = list(db.cvs.find({}, {"_id": 0, "gridfs_id": 1, "fileName": 1, "uploadDate": 1, "score": 1, "tags": 1}).sort("uploadDate", -1))
 
