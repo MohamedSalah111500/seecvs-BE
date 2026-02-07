@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -43,6 +43,9 @@ client = OpenAI(
     api_key=os.environ.get("DEEPSEEK_API_KEY"),
     base_url="https://api.deepseek.com"
 )
+
+# Admin API Key
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 
 # MongoDB / GridFS (use cloud URI)
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
@@ -405,3 +408,44 @@ async def download_cv(file_id: str):
     filename = grid_out.filename or "file"
 
     return StreamingResponse(io.BytesIO(data), media_type=(grid_out.contentType or "application/octet-stream"), headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def verify_admin(authorization: str = Header(None)):
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=500, detail="Admin key not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+@app.get("/api/cv/list")
+async def list_cvs(authorization: str = Header(None)):
+    verify_admin(authorization)
+
+    cvs = list(db.cvs.find({}, {"_id": 0, "gridfs_id": 1, "fileName": 1, "uploadDate": 1, "score": 1, "tags": 1}).sort("uploadDate", -1))
+
+    total_count = len(cvs)
+    total_size = 0
+    for doc in cvs:
+        try:
+            grid_file = fs.get(ObjectId(doc["gridfs_id"]))
+            total_size += grid_file.length
+        except Exception:
+            pass
+
+    return {
+        "totalCount": total_count,
+        "totalSizeMB": round(total_size / (1024 * 1024), 2),
+        "cvs": [
+            {
+                "id": doc["gridfs_id"],
+                "fileName": doc["fileName"],
+                "uploadDate": doc.get("uploadDate", "").isoformat() if doc.get("uploadDate") else None,
+                "score": doc.get("score"),
+                "tags": doc.get("tags", []),
+            }
+            for doc in cvs
+        ],
+    }
